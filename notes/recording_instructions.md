@@ -56,3 +56,19 @@ lerobot-record
 
 ### Why use this?
 This command abstracts away the manual specification of ROS 2 topics and is specifically tailored to format and save the recorded sensory and ground truth data into a structured dataset that the LeRobot training pipeline can consume directly natively.
+
+### Collect Successful Data
+
+Run `helper_scripts/03_collect_successful_data.py` anytime (after starting the headless environment in Terminal 1) directly using: `pixi run python 03_collect_successful_data.py`
+
+Success is strictly defined by the /scoring/insertion_event topic (a std_msgs/msg/String message), which the simulator publishes the exact moment the connector properly seats into the port and completes the task.
+
+To automate the collection and filtering of your data, I have written a Python script in your workspace called 03_collect_successful_data.py.
+
+This script will automatically:
+
+Start recording all the necessary topics to a new ROS bag folder using the same commands you need.
+Launch the CheatCode policy.
+Passively listen to the /scoring/insertion_event topic.
+Stop the recording gracefully when the policy finishes tracking its trajectory.
+Check if the insertion success event was ever triggered. If it was not, the script will automatically delete the unsuccessful bag folder so your final dataset is 100% clean and contains only successful trajectories.

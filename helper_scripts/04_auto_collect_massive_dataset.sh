@@ -29,17 +29,15 @@ for i in $(seq 1 $NUM_EPISODES); do
     # 2. Start the headless evaluation container IN THE BACKGROUND
     # Notice we pass the random parameters to the launch script via entrypoint
     export DBX_CONTAINER_MANAGER=docker
-    distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval > /dev/null
+    /usr/local/bin/distrobox create -r --nvidia -i ghcr.io/intrinsic-dev/aic/aic_eval:latest aic_eval > /dev/null
     
-    distrobox enter -r aic_eval -- /entrypoint.sh \
+    tmux new-session -d -s aic_evaluator "/usr/local/bin/distrobox enter -r aic_eval -- /entrypoint.sh \
         ground_truth:=true \
         start_aic_engine:=true \
         gazebo_gui:=false \
         launch_rviz:=false \
         task_board_x:=$NEW_TB_X \
-        task_board_y:=$NEW_TB_Y &
-    
-    ENV_PID=$!
+        task_board_y:=$NEW_TB_Y"
 
     # 3. Wait for the simulator and engine to fully boot up
     echo "Waiting 20 seconds for simulation to initialize..."
@@ -52,12 +50,10 @@ for i in $(seq 1 $NUM_EPISODES); do
 
     # 5. Tear down the environment completely to prepare for the next randomized episode
     echo "Tearing down environment..."
-    kill -s SIGINT $ENV_PID
-    wait $ENV_PID 2>/dev/null
+    tmux kill-session -t aic_evaluator 2>/dev/null
     
     # Optional: Aggressive cleanup to ensure no zombie gzserver / ros2 processes
-    distrobox enter -r aic_eval -- pkill -f gzserver
-    distrobox enter -r aic_eval -- pkill -f ros2
+    /usr/local/bin/distrobox stop aic_eval --yes
 
     echo "Episode $i complete!"
     sleep 3

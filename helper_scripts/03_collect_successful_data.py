@@ -8,18 +8,25 @@ the ROS bag and the policy, you can just run:
 
 It will:
 1. Start recording the 20 Hz topics into a new folder.
-2. Launch the `CheatCode` policy.
+2. Launch the `CheatCode` policy (unless --skip-policy is passed).
 3. Listen to the `/scoring/insertion_event` topic (which is published when Gazebo
    detects the connector is successfully plugged into the port).
 4. Auto-kill the bag recording when the policy finishes.
 5. If the `/scoring/insertion_event` was NEVER received, it deletes the bag folder
    to keep your dataset clean.
+
+Usage:
+  pixi run python 03_collect_successful_data.py                  # Normal: launches policy + records
+  pixi run python 03_collect_successful_data.py --skip-policy    # External policy: only records + monitors
+  pixi run python 03_collect_successful_data.py --policy-pid 123 # Monitors an existing policy PID
 """
 
+import argparse
 import subprocess
 import time
 import os
 import shutil
+import signal
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -55,6 +62,13 @@ class SuccessMonitor(Node):
             self.policy_finished = True
 
 def main():
+    parser = argparse.ArgumentParser(description='Collect successful data from CheatCode policy')
+    parser.add_argument('--skip-policy', action='store_true',
+                        help='Skip launching the policy (use when aic_model is already running externally)')
+    parser.add_argument('--policy-pid', type=int, default=None,
+                        help='PID of an externally started policy process to monitor')
+    args = parser.parse_args()
+
     rclpy.init()
     monitor = SuccessMonitor()
 
@@ -83,36 +97,59 @@ def main():
     # Wait for bag to initialize fully
     time.sleep(2) 
 
-    # 2. Run the CheatCode policy
-    print("Starting CheatCode policy...")
-    policy_cmd = [
-        "ros2", "run", "aic_model", "aic_model", 
-        "--ros-args", "-p", "use_sim_time:=true", "-p", "policy:=aic_example_policies.ros.CheatCode"
-    ]
-    policy_process = subprocess.Popen(policy_cmd)
+    # 2. Optionally run the CheatCode policy
+    policy_process = None
+    if not args.skip_policy:
+        print("Starting CheatCode policy...")
+        policy_cmd = [
+            "ros2", "run", "aic_model", "aic_model", 
+            "--ros-args", "-p", "use_sim_time:=true", "-p", "policy:=aic_example_policies.ros.CheatCode"
+        ]
+        policy_process = subprocess.Popen(policy_cmd)
 
     # 3. Block and spin the node to listen for the success metric while the policy runs
     start_time = time.time()
-    timeout_duration = 240.0  # 4 minutes per episode
+    timeout_duration = 720.0  # 12 minutes — engine runs 3 trials × 180s each
     
+    def is_policy_running():
+        """Check if the policy process is still running."""
+        if policy_process is not None:
+            return policy_process.poll() is None
+        if args.policy_pid is not None:
+            try:
+                os.kill(args.policy_pid, 0)  # Check if PID exists
+                return True
+            except OSError:
+                return False
+        # If --skip-policy without --policy-pid, rely on lifecycle transitions only
+        return not monitor.policy_finished
+
     try:
-        while policy_process.poll() is None:
+        while is_policy_running():
             if monitor.policy_finished:
                 print("\nLifecycle transition completed indicating policy finish. Terminating process...")
-                policy_process.terminate()
+                if policy_process is not None:
+                    policy_process.terminate()
                 break
             
             elapsed_time = time.time() - start_time
             if elapsed_time > timeout_duration:
                 print(f"\nEpisode timed out after {timeout_duration} seconds! Terminating process...")
                 monitor.success = False
-                policy_process.terminate()
+                if policy_process is not None:
+                    policy_process.terminate()
+                elif args.policy_pid is not None:
+                    try:
+                        os.kill(args.policy_pid, signal.SIGTERM)
+                    except OSError:
+                        pass
                 break
                 
             rclpy.spin_once(monitor, timeout_sec=0.1)
     except KeyboardInterrupt:
         print("\nInterrupted by user. Cleaning up...")
-        policy_process.terminate()
+        if policy_process is not None:
+            policy_process.terminate()
 
     # Policy finished.
     print("Policy finished execution.")
@@ -128,8 +165,8 @@ def main():
         print(f"✅ SUCCESS! Operation was successful. Episode saved in directory: {bag_path}")
     else:
         print(f"❌ FAILED! Successful insertion not detected. Deleting corrupted/failed episode data: {bag_path}")
-        # if os.path.exists(bag_path):
-        #     shutil.rmtree(bag_path)
+        if os.path.exists(bag_path):
+            shutil.rmtree(bag_path)
 
     monitor.destroy_node()
     rclpy.shutdown()

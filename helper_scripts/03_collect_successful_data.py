@@ -85,6 +85,8 @@ def main():
     # 1. Start ROS 2 bag recording
     bag_cmd = [
         "ros2", "bag", "record", "-o", bag_path,
+        "-s", "mcap", "--storage-preset-profile", "zstd_small",
+        "--topics",
         "/left_camera/image", "/center_camera/image", "/right_camera/image",
         "/left_camera/camera_info", "/center_camera/camera_info", "/right_camera/camera_info",
         "/joint_states", "/gripper_state", "/fts_broadcaster/wrench",

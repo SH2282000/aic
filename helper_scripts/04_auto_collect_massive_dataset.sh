@@ -11,7 +11,10 @@ if [ -f /run/.containerenv ] || [ -f /.dockerenv ]; then
     exit 1
 fi
 
-NUM_EPISODES=50
+tmux kill-session -t aic_evaluator 2>/dev/null
+distrobox stop aic_eval --yes 2>/dev/null
+
+NUM_EPISODES=300
 
 echo "Starting massive automated data collection for $NUM_EPISODES episodes..."
 
@@ -40,30 +43,20 @@ for i in $(seq 1 $NUM_EPISODES); do
     tmux new-session -d -s aic_evaluator "distrobox enter -r aic_eval -- /entrypoint.sh \
         ground_truth:=true \
         start_aic_engine:=true \
-        gazebo_gui:=true \
-        launch_rviz:=true \
+        gazebo_gui:=false \
+        launch_rviz:=false \
         task_board_x:=$NEW_TB_X \
         task_board_y:=$NEW_TB_Y"
 
-    # 3. Start aic_model IMMEDIATELY so the aic_engine can discover it
-    #    The engine has a 30-second timeout to find the model on the ROS 2 graph.
-    #    We start the model right away so it's discoverable well within that window.
-    echo "Starting aic_model early for engine discovery..."
-    sleep 3  # Brief pause for container/ROS to begin initializing
-    pixi run ros2 run aic_model aic_model \
-        --ros-args -p use_sim_time:=true -p policy:=aic_example_policies.ros.CheatCode &
-    MODEL_PID=$!
-    echo "aic_model started with PID $MODEL_PID"
-
-    # 4. Wait for the simulator to be fully ready before starting bag recording
+    # 3. Wait for the simulator to be fully ready before starting aic_model
     echo "Waiting for simulation to initialize (up to 90 seconds)..."
     BOOT_TIMEOUT=90
     BOOT_ELAPSED=0
     SIM_READY=false
 
-    # Give the sim at least 15 more seconds to start up
-    sleep 15
-    BOOT_ELAPSED=18  # 3s initial + 15s here
+    # Give the sim some time to start up
+    sleep 30
+    BOOT_ELAPSED=30
 
     # Poll for /joint_states topic to confirm sim is ready
     while [ $BOOT_ELAPSED -lt $BOOT_TIMEOUT ]; do
@@ -73,14 +66,28 @@ for i in $(seq 1 $NUM_EPISODES); do
             sleep 5  # Stabilization buffer
             break
         fi
-        sleep 5
-        BOOT_ELAPSED=$((BOOT_ELAPSED + 5))
+        sleep 10    
+        BOOT_ELAPSED=$((BOOT_ELAPSED + 10))
         echo "  Still waiting... (${BOOT_ELAPSED}s elapsed)"
     done
 
     if [ "$SIM_READY" = false ]; then
         echo "WARNING: Simulation may not be fully ready after ${BOOT_TIMEOUT}s. Proceeding anyway..."
     fi
+
+    # 4. Start aic_model AFTER the simulation is ready
+    #    This ensures the engine can properly discover, configure, and activate the model
+    #    before sending any goals (avoids the "lifecycle is not in the active state" race).
+    #    We source the Zenoh model session config so the host-side aic_model connects
+    #    to the Zenoh router running inside the eval container.
+    echo "Starting aic_model now that simulation is ready..."
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "$SCRIPT_DIR/../docker/aic_model/zenoh_config_model_session.sh"
+    pixi run ros2 run aic_model aic_model \
+        --ros-args -p use_sim_time:=true -p policy:=aic_example_policies.ros.CheatCode &
+    MODEL_PID=$!
+    echo "aic_model started with PID $MODEL_PID"
+    sleep 20  # Give the engine time to discover and activate aic_model
 
     # 5. Run the data collection (bag recording + monitoring only, model already running)
     echo "Launching bag recording and monitoring..."
